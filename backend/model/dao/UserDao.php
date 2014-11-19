@@ -3,40 +3,27 @@
 
 include_once __SITE_PATH . '/model/dao/' . 'DBConnection.php';
 include_once __SITE_PATH . '/model/entities/' . 'User.php';
-include_once __SITE_PATH . '/model/entities/' . 'MiniUser.php';
+
+define(CLIENT_ID,'231191809666-ncka74mkv68hrgtm5lces6rf30req6b4.apps.googleusercontent.com');
+define(CLIENT_SECRET,'yJyaoY6odl8WwqdTkTfDOsmQ');
 
 class UserDao
 {
-    public function getUsersTaggedWith($noun, $fb_source_id) {
-        $query = "select * from Usertest where fb_id in ( select to_user_id from Stamps where noun_name ='" . $noun . "' and "
-                . "to_user_id in (select target_friend_id from UserFriends where source_friend_id ='" . $fb_source_id . "') );";
 
-        $db = DBConnection::getInstance()->getHandle();
-        $results = $db->getRecords($query);
-        $users = array();
-        foreach ($results as $result) {
-            $user = new User($result["id"], $result["fb_id"], $result["first_name"], $result["last_name"], $result["create_time"], $result["profile_pic"], $result["gender"], $result["hometown_name"], $result["relationship_status"], $result["birthdate"], $result["email"], $result["name"], $result["location"], $result["timezone"]);
-            $users[] = $user;
-        }
+    private function refresh_gtoken($refresh_token)
+    {
+        $g_url = 'https://accounts.google.com/o/oauth2/token';
+        $payload = "refresh_token=$refresh_token&grant_type=refresh_token&client_id=" . CLIENT_ID . "&client_secret=" . CLIENT_SECRET;
+        error_log("Refresh payload: $payload");
+        $ch = curl_init($g_url);
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $response = curl_exec($ch);
 
-        return $users;
-    }
-
-    public function searchUsers($name, $fb_id) {
-        $db = DBConnection::getInstance()->getHandle();
-
-
-        $query = "select name, email,profile_pic, fb_id ,UserFriends.create_time  from Usertest  left outer join UserFriends on "
-            . "( fb_id = target_friend_id and source_friend_id='" . $fb_id . "') where   name like '%" . $name . "%' and "
-            . "fb_id != '" . $fb_id . "' order by UserFriends.create_time desc";
-        $results = $db->getRecords($query);
-        $users = array();
-        foreach ($results as $result) {
-            $user = new MiniUser($result["fb_id"], $result["profile_pic"], $result["email"], $result["name"]);
-            $users[] = $user;
-        }
-
-        return $users;
+        error_log ("Google refresh api response : $response");
+        $json = json_decode($response);
+        return $json->access_token;
     }
 
     public function getUserById($user_id)
@@ -44,63 +31,40 @@ class UserDao
 
         $db = DBConnection::getInstance()->getHandle();
 
-        $query = "Select * from Usertest where fb_id='" . $user_id . "'";
+        $query = "Select * from Users where g_id='" . $user_id . "'";
         $result = $db->getSingleRecord($query);
 
 
-        $user = new User($result["id"],$result["fb_id"],$result["first_name"],$result["last_name"],$result["create_time"],
-                        $result["profile_pic"],$result["gender"],$result["hometown_name"],$result["relationship_status"],$result["birthdate"],
-                        $result["email"],$result["name"],$result["location"],$result["timezone"]);
+        $user = new User($result["id"],$result["g_id"],$result["create_time"],
+                        $result["profile_pic"],$result["email"],$result["name"],
+                        $result["g_access_token"],$result["g_refresh_token"]);
 
+        $user->g_access_token = $this->refresh_gtoken($user->g_refresh_token);
+
+        $update_query = "UPDATE Users set g_access_token = '" . $user->g_access_token . "' where id = " . $result["id"];
+        $db->executeQuery($update_query);
         return $user;
     }
 
-    public function addUser($fb_id,$first_name,$last_name,$profile_pic,
-                         $gender,$hometown_name,$relationship_status,$birthdate,$email,$name,$location,$timezone)
+    public function addUser($g_id,$name,$profile_pic,$email,$g_access_token,$g_refresh_token)
     {
         $db = DBConnection::getInstance()->getHandle();
 
-        $prepared_query = " INSERT  into Usertest(fb_id,first_name,last_name,name,email,location,gender,relationship_status,
-                            timezone,create_time,birthdate,profile_pic) values (?,?,?,?,?,?,?,?,?,?,?,?)";
+        $prepared_query = " INSERT  into Users(g_id,name,email,create_time,profile_pic,g_access_token,g_refresh_token)
+                          values (?,?,?,?,?,?,?)";
         $create_time = date("Y-m-d H:i:s");
 
         $stmt = $db->getPreparedStatement($prepared_query);
-        $stmt->bind_param("ssssssssssss",$fb_id,$first_name,$last_name,$name,$email,$location,$gender,$relationship_status,$timezone,
-                                         $create_time,$birthdate,$profile_pic);
+        $stmt->bind_param("sssssss",$g_id,$name,$email, $create_time,$profile_pic,$g_access_token,$g_refresh_token);
 
-        error_log("Executing $prepared_query with params $fb_id,$first_name,$last_name,$name,$email,$location,$gender,$relationship_status,$timezone,
-                                         $create_time,$birthdate,$profile_pic");
+        error_log("Executing $prepared_query with params $g_id,$name,$email,$create_time,$profile_pic,$g_access_token,$g_refresh_token");
         if(!($status = $stmt->execute()))
             throw new WebServiceException("Unable to execute query  " ,3017,__FILE__,__LINE__);
         $id = $stmt->insert_id;
         $stmt->close();
 
         error_log("User $name inserted with $id and status $status");
-        return new User($id,$fb_id,$first_name,$last_name,$create_time,$profile_pic,$gender,$hometown_name,$relationship_status,
-                        $birthdate,$email,$name,$location,$timezone);
+        return new User($id,$g_id,$create_time,$profile_pic,$email,$name,$g_access_token,$g_refresh_token);
     }
 
-    public function fillMiniUserMap($user_ids)
-    {
-        $db = DBConnection::getInstance()->getHandle();
-        $unique_user_ids = array_unique($user_ids);
-
-        $in_clause = "('" . implode("','", $unique_user_ids) . "')";
-
-        error_log("Fetching user $in_clause");
-
-        $query = "SELECT fb_id, name,profile_pic,email from Usertest where fb_id in $in_clause";
-
-        $results = $db->getRecords($query);
-
-        $userMap = '';
-        foreach($results as $r)
-        {
-            $userMap[$r["fb_id"]] = new MiniUser($r["fb_id"],$r["profile_pic"],$r["email"],$r["name"]);
-        }
-
-        error_log(print_r($userMap,1));
-        return $userMap;
-
-    }
 }

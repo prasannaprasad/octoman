@@ -18,7 +18,7 @@ class DBConnection
 
     private function __construct()
     {
-        $this->_handle = new MysqlConnector('freezingbearbackend', 'root', 'freezingbear', 'freezingbearbackend.czqczfkbvqd0.us-west-2.rds.amazonaws.com');
+        $this->_handle = new MysqlConnector('octoman', 'root', 'freezingbear', 'freezingbearbackend.czqczfkbvqd0.us-west-2.rds.amazonaws.com');
 
     }
 
